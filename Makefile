@@ -23,17 +23,22 @@ vuln:
 	@echo "Checking for vulnerabilities..."
 	@trivy fs \
 		--db-repository ghcr.io/aquasecurity/trivy-db \
+		--scanners vuln \
 		--timeout 15m \
 		--exit-code 1 \
 		--severity HIGH,CRITICAL .
 
-sec:
-	@echo "Checking for security issues..."
+vuln-v:
+	@echo "Checking for vulnerabilities (verbose)..."
 	@trivy fs \
 		--db-repository ghcr.io/aquasecurity/trivy-db \
+		--scanners vuln \
 		--timeout 15m \
-		--exit-code 1 \
-		--severity HIGH,CRITICAL .
+		--severity LOW,MEDIUM,HIGH,CRITICAL .
+
+sec:
+	@echo "Checking for security issues..."
+	@./mvnw -B -ntp compile spotbugs:check
 
 build:
 	@echo "Building..."

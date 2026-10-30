@@ -37,22 +37,28 @@ class DashboardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", containsString("no-store")))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.updatedAt").isString())
-                .andExpect(jsonPath("$.statusGroups.submit.statusCodes").value("Status 00,01,02"))
-                .andExpect(jsonPath("$.statusGroups.approved.label").value("APPROVED"))
-                .andExpect(jsonPath("$.regions.length()").value(8))
-                .andExpect(jsonPath("$.regions[0].region").value("BKK-A"))
-                .andExpect(jsonPath("$.regions[7].region").value("Other"))
-                .andExpect(jsonPath("$.regions[0].submit.daily.cases").isNumber())
-                .andExpect(jsonPath("$.regions[0].pending.ytd.anp").isNumber())
-                .andExpect(jsonPath("$.overall.region").value("OVERALL"))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.type").value("success"))
+                .andExpect(jsonPath("$.message").value("Successful."))
+                .andExpect(jsonPath("$.data.updatedAt").isString())
+                .andExpect(jsonPath("$.data.statusGroups.submit.statusCodes").value("Status 00,01,02"))
+                .andExpect(jsonPath("$.data.statusGroups.approved.label").value("APPROVED"))
+                .andExpect(jsonPath("$.data.regions.length()").value(8))
+                .andExpect(jsonPath("$.data.regions[0].region").value("BKK-A"))
+                .andExpect(jsonPath("$.data.regions[7].region").value("Other"))
+                .andExpect(jsonPath("$.data.regions[0].submit.daily.cases").isNumber())
+                .andExpect(jsonPath("$.data.regions[0].pending.ytd.anp").isNumber())
+                .andExpect(jsonPath("$.data.overall.region").value("OVERALL"))
                 .andReturn();
 
         JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(root.get("updatedAt").asString()).endsWith("+07:00");
+        JsonNode dashboard = root.get("data");
+        assertThat(root.get("success").asBoolean()).isTrue();
+        assertThat(root.get("type").asString()).isEqualTo("success");
+        assertThat(dashboard.get("updatedAt").asString()).endsWith("+07:00");
 
-        JsonNode regions = root.get("regions");
-        JsonNode overall = root.get("overall");
+        JsonNode regions = dashboard.get("regions");
+        JsonNode overall = dashboard.get("overall");
         for (String group : new String[] {"submit", "approved", "pending"}) {
             for (String period : new String[] {"daily", "mtd", "ytd"}) {
                 int expectedCases = 0;

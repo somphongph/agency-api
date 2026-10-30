@@ -5,6 +5,19 @@ spring:
 server:
   port: 8080
 
+# ---- API docs --------------------------------------------------------------
+# Swagger UI:      http://localhost:8080/swagger-ui.html
+# OpenAPI JSON:    http://localhost:8080/v3/api-docs
+# Code is the source of truth (springdoc reads the controllers/models); this only
+# sets presentation. `application-prod.yml` disables both endpoints.
+springdoc:
+  api-docs:
+    path: /v3/api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operations-sorter: method
+    tags-sorter: alpha
+
 # ---- Mock data knobs -------------------------------------------------------
 # Every GET /api/v1/dashboard generates a brand new dataset from these ranges.
 dashboard:
