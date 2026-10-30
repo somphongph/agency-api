@@ -1,12 +1,9 @@
 package com.agency.dashboard.api;
 
+import com.agency.dashboard.api.model.ApiResponse;
 import com.agency.dashboard.api.model.DashboardResponse;
 import com.agency.dashboard.service.DashboardService;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.media.Content;
-import io.swagger.v3.oas.annotations.media.Schema;
-import io.swagger.v3.oas.annotations.responses.ApiResponse;
-import io.swagger.v3.oas.annotations.responses.ApiResponses;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
@@ -29,19 +26,15 @@ public class DashboardController {
     @GetMapping(produces = MediaType.APPLICATION_JSON_VALUE)
     @Operation(
             summary = "Get the dashboard",
-            description = "Returns the dashboard payload: per-region and OVERALL metrics for the "
+            description = "Returns the dashboard payload inside the standard envelope "
+                    + "(success / type / message / data): per-region and OVERALL metrics for the "
                     + "submit / approved / pending status groups over daily, MTD and YTD periods. "
-                    + "The data is generated per request, so two calls never return the same numbers.")
-    @ApiResponses({
-            @ApiResponse(responseCode = "200", description = "Dashboard payload",
-                    content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE,
-                            schema = @Schema(implementation = DashboardResponse.class))),
-            @ApiResponse(responseCode = "500", description = "Unexpected server error",
-                    content = @Content(mediaType = MediaType.APPLICATION_JSON_VALUE))
-    })
-    public ResponseEntity<DashboardResponse> getDashboard() {
+                    + "The data is generated per request, so two calls never return the same numbers. "
+                    + "Errors use the same envelope with success=false, a type/message describing the "
+                    + "failure, and data=null.")
+    public ResponseEntity<ApiResponse<DashboardResponse>> getDashboard() {
         return ResponseEntity.ok()
                 .cacheControl(CacheControl.noStore())
-                .body(dashboardService.currentDashboard());
+                .body(ApiResponse.ok(dashboardService.currentDashboard()));
     }
 }

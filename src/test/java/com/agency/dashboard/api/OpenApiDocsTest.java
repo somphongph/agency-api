@@ -42,9 +42,24 @@ class OpenApiDocsTest {
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.tags[0]").value("dashboard"))
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.summary").value("Get the dashboard"))
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.responses['200']").exists())
-                .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.responses['500']").exists())
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.responses['200'].content"
-                        + "['application/json'].schema['$ref']").value("#/components/schemas/DashboardResponse"));
+                        + "['application/json'].schema['$ref']").value("#/components/schemas/ApiResponseDashboardResponse"));
+    }
+
+    @Test
+    void documentsTheResponseEnvelope() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.components.schemas.ApiResponseDashboardResponse.properties.success.type")
+                        .value("boolean"))
+                .andExpect(jsonPath("$.components.schemas.ApiResponseDashboardResponse.properties.success.example")
+                        .value(true))
+                .andExpect(jsonPath("$.components.schemas.ApiResponseDashboardResponse.properties.type.example")
+                        .value("success"))
+                .andExpect(jsonPath("$.components.schemas.ApiResponseDashboardResponse.properties.message.example")
+                        .value("Successful."))
+                .andExpect(jsonPath("$.components.schemas.ApiResponseDashboardResponse.properties.data['$ref']")
+                        .value("#/components/schemas/DashboardResponse"));
     }
 
     @Test
