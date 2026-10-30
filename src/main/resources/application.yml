@@ -3,7 +3,7 @@ spring:
     name: agency-api
 
 server:
-  port: 8080
+  port: 8081
 
 # ---- API docs --------------------------------------------------------------
 # Swagger UI:      http://localhost:8080/swagger-ui.html
@@ -19,7 +19,7 @@ springdoc:
     tags-sorter: alpha
 
 # ---- Mock data knobs -------------------------------------------------------
-# Every GET /api/v1/dashboard generates a brand new dataset from these ranges.
+# Every POST /api/v1/dashboard/refresh generates a brand new dataset from these ranges.
 dashboard:
   regions:
     - BKK-A

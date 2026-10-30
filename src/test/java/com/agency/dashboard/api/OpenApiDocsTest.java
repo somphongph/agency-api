@@ -40,10 +40,22 @@ class OpenApiDocsTest {
         mockMvc.perform(get("/v3/api-docs"))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.tags[0]").value("dashboard"))
-                .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.summary").value("Get the dashboard"))
+                .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.summary").value("Get the current dashboard"))
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.responses['200']").exists())
                 .andExpect(jsonPath("$['paths']['/api/v1/dashboard'].get.responses['200'].content"
                         + "['application/json'].schema['$ref']").value("#/components/schemas/ApiResponseDashboardResponse"));
+    }
+
+    @Test
+    void documentsTheRefreshAndStreamEndpoints() throws Exception {
+        mockMvc.perform(get("/v3/api-docs"))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$['paths']['/api/v1/dashboard/refresh'].post.summary")
+                        .value("Push a new random dataset"))
+                .andExpect(jsonPath("$['paths']['/api/v1/dashboard/stream'].get.summary")
+                        .value("Stream dashboard updates (SSE)"))
+                .andExpect(jsonPath("$['paths']['/api/v1/dashboard/stream'].get.responses['200'].content"
+                        + "['text/event-stream']").exists());
     }
 
     @Test

@@ -51,12 +51,21 @@ class DashboardServiceTest {
         assertOverallEqualsSum(response.overall(), response.regions());
     }
 
-    @RepeatedTest(20)
-    void everyCallReturnsFreshRandomData() {
+    @Test
+    void keepsTheSameSnapshotUntilTheDashboardIsRefreshed() {
         DashboardResponse first = service.currentDashboard();
         DashboardResponse second = service.currentDashboard();
 
-        assertThat(snapshot(second)).isNotEqualTo(snapshot(first));
+        assertThat(second).isSameAs(first);
+    }
+
+    @RepeatedTest(20)
+    void refreshGeneratesFreshRandomData() {
+        DashboardResponse first = service.currentDashboard();
+        DashboardResponse refreshed = service.refreshDashboard();
+
+        assertThat(snapshot(refreshed)).isNotEqualTo(snapshot(first));
+        assertThat(service.currentDashboard()).isSameAs(refreshed);
     }
 
     private static void assertStatus(PeriodMetrics metrics) {

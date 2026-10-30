@@ -16,6 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -75,19 +76,43 @@ class DashboardControllerTest {
     }
 
     @Test
-    void returnsNewNumbersOnEveryRequest() throws Exception {
-        String first = payload();
-        String second = payload();
+    void keepsTheSameSnapshotUntilARefreshIsRequested() throws Exception {
+        String first = dashboardData();
+        String second = dashboardData();
 
-        assertThat(second).isNotEqualTo(first);
+        assertThat(second).isEqualTo(first);
     }
 
-    private String payload() throws Exception {
-        return mockMvc.perform(get("/api/v1/dashboard"))
+    @Test
+    void refreshGeneratesNewRandomNumbers() throws Exception {
+        String before = dashboardData();
+
+        String afterBody = mockMvc.perform(post("/api/v1/dashboard/refresh"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", containsString("no-store")))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.type").value("success"))
+                .andExpect(jsonPath("$.data.regions.length()").value(8))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode after = objectMapper.readTree(afterBody).get("data");
+        assertThat(after.toString()).isNotEqualTo(before);
+        assertThat(after.get("regions").get(0).get("submit")).isNotNull();
+        assertThat(after.get("overall").get("region").asString()).isEqualTo("OVERALL");
+
+        // The refreshed dataset is now the current one.
+        assertThat(dashboardData()).isEqualTo(after.toString());
+    }
+
+    private String dashboardData() throws Exception {
+        String body = mockMvc.perform(get("/api/v1/dashboard"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
+        return objectMapper.readTree(body).get("data").toString();
     }
 
     private static long hundredths(BigDecimal value) {
