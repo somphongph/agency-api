@@ -1,0 +1,44 @@
+spring:
+  application:
+    name: agency-api
+
+server:
+  port: 8080
+
+# ---- Mock data knobs -------------------------------------------------------
+# Every GET /api/v1/dashboard generates a brand new dataset from these ranges.
+dashboard:
+  regions:
+    - BKK-A
+    - BKK-B
+    - Central
+    - West
+    - South
+    - North
+    - Northeast
+    - Other
+  status-groups:
+    submit:
+      label: SUBMIT
+      status-codes: "Status 00,01,02"
+    approved:
+      label: APPROVED
+      status-codes: "Status 40"
+    pending:
+      label: PENDING
+      status-codes: "Status 20/21/29/30/31/33"
+  case-ranges:
+    submit:
+      min: 1200
+      max: 9000
+    approved:
+      min: 900
+      max: 7000
+    pending:
+      min: 80
+      max: 1200
+  anp:
+    rate-min: 4.50
+    rate-max: 28.00
+    mtd-max-share: 0.15
+    daily-max-share: 0.20

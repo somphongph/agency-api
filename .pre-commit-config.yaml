@@ -1,0 +1,41 @@
+files: ^agency-api/
+
+repos:
+  # Basic checks
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.5.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: check-added-large-files
+
+  # Java / Maven local checks
+  - repo: local
+    hooks:
+      - id: mvn-compile
+        name: Maven compile
+        entry: bash -c 'cd agency-api && ./mvnw -B -ntp compile'
+        language: system
+        pass_filenames: false
+
+      - id: unit-tests
+        name: Unit tests
+        entry: bash -c 'cd agency-api && make test'
+        language: system
+        pass_filenames: false
+
+      - id: trivy-check
+        name: Trivy check
+        entry: bash -c 'cd agency-api && make trivy'
+        language: system
+        pass_filenames: false
+        always_run: true
+
+      - id: mvn-build
+        name: Maven build
+        entry: bash -c 'cd agency-api && ./mvnw -B -ntp package -DskipTests'
+        language: system
+        pass_filenames: false
