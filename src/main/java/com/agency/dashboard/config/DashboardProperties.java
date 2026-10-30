@@ -17,6 +17,12 @@ public record DashboardProperties(
         Map<String, CaseRange> caseRanges,
         Anp anp) {
 
+    public DashboardProperties {
+        regions = List.copyOf(regions);
+        statusGroups = Map.copyOf(statusGroups);
+        caseRanges = Map.copyOf(caseRanges);
+    }
+
     /**
      * Inclusive range for the YTD case count of one region + status group.
      * MTD and daily are derived as a share of the next larger period so that

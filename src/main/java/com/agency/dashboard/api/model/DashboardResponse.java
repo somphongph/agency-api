@@ -15,4 +15,9 @@ public record DashboardResponse(
         Map<String, StatusGroupMeta> statusGroups,
         List<RegionRow> regions,
         RegionRow overall) {
+
+    public DashboardResponse {
+        statusGroups = Map.copyOf(statusGroups);
+        regions = List.copyOf(regions);
+    }
 }
