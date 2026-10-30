@@ -1,0 +1,7 @@
+# Production profile: the API docs are a development aid, so they are not served here.
+# Equivalent of the `if conf.Env != "prod"` guard around the Swagger route in tgr-api-place.
+springdoc:
+  api-docs:
+    enabled: false
+  swagger-ui:
+    enabled: false
