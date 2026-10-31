@@ -1,0 +1,202 @@
+name: Deploy API
+
+# Build the image, push it to ECR and roll it out on ECS Fargate.
+#
+# Non-secret settings come from GitHub *Variables*; anything sensitive comes from
+# GitHub *Secrets* (see deploy/README.md). Nothing is baked into the image: the task
+# definition is rendered at deploy time and registered as a new revision.
+
+on:
+  push:
+    branches: 
+      - feature/*
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - 'deploy/**'
+      - '.github/workflows/deploy-api.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'GitHub Environment to deploy to'
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-api-${{ github.event.inputs.environment || (github.ref_name == 'main' && 'production' || 'staging') }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC: no long-lived AWS keys in the repo
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+  ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY || 'agency-api' }}
+  DOCKER_PLATFORM: ${{ vars.DOCKER_PLATFORM || 'linux/arm64' }}
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Unit and integration tests
+        run: ./mvnw -B -ntp test
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: ${{ github.event.inputs.environment || (github.ref_name == 'main' && 'production' || 'staging') }}
+      url: ${{ vars.APP_URL }}
+    env:
+      # Prefer OIDC (AWS_ROLE_ARN). The static-key path only keeps older setups working;
+      # when both are configured, OIDC wins.
+      AWS_AUTH_MODE: ${{ secrets.AWS_ROLE_ARN != '' && 'oidc' || 'keys' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        if: env.AWS_AUTH_MODE == 'oidc'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: gha-agency-api-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (static keys fallback)
+        if: env.AWS_AUTH_MODE == 'keys'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check the target exists
+        run: |
+          set -euo pipefail
+          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+          status=$(aws ecs describe-services \
+                     --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+                     --query 'services[0].status' --output text)
+          echo "ECS service status: $status"
+          test "$status" = "ACTIVE"
+
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "${AWS_REGION}.amazonaws.com"
+
+      - name: Set up QEMU (only needed when DOCKER_PLATFORM differs from the runner)
+        if: env.DOCKER_PLATFORM == 'linux/arm64'
+        uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        id: build
+        run: |
+          set -euo pipefail
+          registry="${AWS_REGION}.amazonaws.com"
+          image="${registry}/${ECR_REPOSITORY}:${IMAGE_TAG}"
+          docker buildx build \
+            --platform "$DOCKER_PLATFORM" \
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+            --tag "$image" \
+            --push .
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition
+        env:
+          # Optional secrets. JSON array (an object also works):
+          #   [{"name":"FOO","value":"bar"}]
+          APP_ENV_JSON: ${{ secrets.APP_ENV_JSON }}
+          #   [{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:..."}]
+          APP_SECRETS_JSON: ${{ secrets.APP_SECRETS_JSON }}
+        run: |
+          set -euo pipefail
+          jq \
+            --arg image "${{ steps.build.outputs.image }}" \
+            --arg family "$ECS_TASK_FAMILY" \
+            --arg execRole "$ECS_EXECUTION_ROLE_ARN" \
+            --arg region "$AWS_REGION" \
+            --arg platform "$DOCKER_PLATFORM" \
+            --argjson extraEnv "${APP_ENV_JSON:-[]}" \
+            --argjson extraSecrets "${APP_SECRETS_JSON:-[]}" \
+            '
+            def entries:
+              if type == "object" then to_entries | map({name: .key, value: .value}) else . end;
+
+            .family = $family
+            | .executionRoleArn = $execRole
+            | .containerDefinitions[0].image = $image
+            | .containerDefinitions[0].environment =
+                (($extraEnv | entries) + .containerDefinitions[0].environment | unique_by(.name))
+            | .containerDefinitions[0].secrets =
+                (($extraSecrets | entries) + .containerDefinitions[0].secrets | unique_by(.name))
+            | .runtimePlatform.cpuArchitecture =
+                (if ($platform | test("arm64")) then "ARM64" else "X86_64" end)
+            | .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
+            ' deploy/task-definition.json > /tmp/task-definition.json
+
+          jq -e --arg prefix "${AWS_REGION}.amazonaws.com/" \
+            '.containerDefinitions[0].image | startswith($prefix)' /tmp/task-definition.json >/dev/null
+          jq -r '.containerDefinitions[0]
+                 | "image=\(.image)\nenv=\(.environment | length)\nsecrets=\(.secrets | length)"' \
+            /tmp/task-definition.json
+
+      - name: Register task definition
+        id: register
+        run: |
+          set -euo pipefail
+          arn=$(aws ecs register-task-definition \
+                  --cli-input-json file:///tmp/task-definition.json \
+                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_definition=$arn" >> "$GITHUB_OUTPUT"
+          echo "Registered $arn"
+
+      - name: Update service
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.register.outputs.task_definition }}" \
+            --query 'service.{service:serviceName,desired:desiredCount,taskDefinition:taskDefinition}' \
+            --output json
+
+      - name: Wait for the service to stabilize
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition}' \
+            --output table
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### agency-api deploy"
+            echo
+            echo "- image: \`${{ steps.build.outputs.image }}\`"
+            echo "- task definition: \`${{ steps.register.outputs.task_definition }}\`"
+            echo "- cluster/service: \`$ECS_CLUSTER\` / \`$ECS_SERVICE\`"
+          } >> "$GITHUB_STEP_SUMMARY"
