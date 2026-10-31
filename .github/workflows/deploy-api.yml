@@ -87,21 +87,74 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Validate settings
+        run: |
+          set -euo pipefail
+
+          for name in AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE ECS_EXECUTION_ROLE_ARN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is empty — set it in the repository/environment variables."
+              exit 1
+            fi
+          done
+
+          # The task needs an IAM role, not an ECS service/ARN from another service.
+          case "$ECS_EXECUTION_ROLE_ARN" in
+            arn:aws:iam::*:role/*) ;;
+            *)
+              echo "::error::ECS_EXECUTION_ROLE_ARN must be an IAM role ARN (arn:aws:iam::<account>:role/<name>), got '$ECS_EXECUTION_ROLE_ARN'."
+              exit 1
+              ;;
+          esac
+
+      - name: Resolve image coordinates
+        run: |
+          set -euo pipefail
+
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          # ECR_REPOSITORY must be the repository name only (`agency/agency-api`).
+          # A pasted image URI is accepted and reduced to the name.
+          repository=$(printf '%s' "$ECR_REPOSITORY" \
+            | sed -E 's#^https?://##' \
+            | sed -E 's#^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/##' \
+            | sed -E 's#:[^/:]+$##')
+
+          if [ -z "$repository" ] || printf '%s' "$repository" | grep -q '\.amazonaws\.com'; then
+            echo "::error::ECR_REPOSITORY must be a repository name (e.g. agency/agency-api), got '$ECR_REPOSITORY'."
+            exit 1
+          fi
+
+          {
+            echo "REGISTRY=$registry"
+            echo "ECR_REPOSITORY=$repository"
+            echo "IMAGE=${registry}/${repository}:${IMAGE_TAG}"
+          } >> "$GITHUB_ENV"
+
+          echo "Registry: $registry"
+          echo "Image:    ${registry}/${repository}:${IMAGE_TAG}"
+
       - name: Check the target exists
         run: |
           set -euo pipefail
-          aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null
+
+          if ! aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::ECR repository '$ECR_REPOSITORY' not found in $AWS_REGION."
+            exit 1
+          fi
+
           status=$(aws ecs describe-services \
                      --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
                      --query 'services[0].status' --output text)
-          echo "ECS service status: $status"
+          echo "ECS service $ECS_CLUSTER/$ECS_SERVICE: $status"
           test "$status" = "ACTIVE"
 
       - name: Log in to ECR
         run: |
           set -euo pipefail
           aws ecr get-login-password --region "$AWS_REGION" \
-            | docker login --username AWS --password-stdin "${AWS_REGION}.amazonaws.com"
+            | docker login --username AWS --password-stdin "$REGISTRY"
 
       - name: Set up QEMU (only needed when DOCKER_PLATFORM differs from the runner)
         if: env.DOCKER_PLATFORM == 'linux/arm64'
@@ -113,15 +166,13 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          registry="${AWS_REGION}.amazonaws.com"
-          image="${registry}/${ECR_REPOSITORY}:${IMAGE_TAG}"
           docker buildx build \
             --platform "$DOCKER_PLATFORM" \
             --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
             --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --tag "$image" \
+            --tag "$IMAGE" \
             --push .
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Render task definition
         env:
@@ -133,7 +184,7 @@ jobs:
         run: |
           set -euo pipefail
           jq \
-            --arg image "${{ steps.build.outputs.image }}" \
+            --arg image "$IMAGE" \
             --arg family "$ECS_TASK_FAMILY" \
             --arg execRole "$ECS_EXECUTION_ROLE_ARN" \
             --arg region "$AWS_REGION" \
@@ -156,7 +207,7 @@ jobs:
             | .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
             ' deploy/task-definition.json > /tmp/task-definition.json
 
-          jq -e --arg prefix "${AWS_REGION}.amazonaws.com/" \
+          jq -e --arg prefix "$REGISTRY/" \
             '.containerDefinitions[0].image | startswith($prefix)' /tmp/task-definition.json >/dev/null
           jq -r '.containerDefinitions[0]
                  | "image=\(.image)\nenv=\(.environment | length)\nsecrets=\(.secrets | length)"' \

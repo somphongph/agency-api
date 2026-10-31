@@ -24,10 +24,10 @@
 | name | ตัวอย่าง | หมายเหตุ |
 |---|---|---|
 | `AWS_REGION` | `ap-southeast-1` | |
-| `ECR_REPOSITORY` | `agency-api` | ต้องมี repo อยู่แล้ว |
-| `ECS_CLUSTER` | `agency-prod` | |
+| `ECR_REPOSITORY` | `agency/agency-api` | **ชื่อ repo เท่านั้น** (ไม่ต้องใส่ registry/URI) — workflow derive `<account>.dkr.ecr.<region>.amazonaws.com` เอง |
+| `ECS_CLUSTER` | `agency-prod` | ชื่อ cluster ที่มีอยู่จริง (`aws ecs describe-clusters --clusters <name>`) |
 | `ECS_SERVICE` | `agency-api` | **ต้องมี service อยู่แล้ว** (workflow ไม่สร้าง) |
-| `ECS_EXECUTION_ROLE_ARN` | `arn:aws:iam::123:role/agency-api-execution` | ใช้ดึง image + เขียน CloudWatch |
+| `ECS_EXECUTION_ROLE_ARN` | `arn:aws:iam::123:role/agency-api-execution` | **IAM role ARN** (ไม่ใช่ ECS service ARN) ใช้ดึง image + เขียน CloudWatch |
 | `ECS_TASK_FAMILY` | `agency-api` | ไม่ใส่ = `agency-api` |
 | `DOCKER_PLATFORM` | `linux/arm64` (default) | ต้องตรงกับ `runtimePlatform` — workflow map ให้อัตโนมัติ (`arm64` → `ARM64`, อื่น ๆ → `X86_64`) และเปิด QEMU ให้เมื่อ build arm64 บน runner x86 |
 | `APP_URL` | `https://dashboard.example.com` | ใช้โชว์ใน GitHub UI (optional) |
@@ -83,6 +83,16 @@ workflow จะแทนค่า: `family`, `executionRoleArn`, `image`, `runti
 - ECS cluster + service (Fargate, `awsvpc`, 2 subnets, SG เปิด 8080 จาก ALB SG)
 - ALB target group ชี้ `/api/v1/health` หรือ `/api/v1/dashboard` (matcher 200)
 - CloudWatch log group `/ecs/agency-api` (หรือให้ `awslogs-create-group=true` สร้างให้ — ต้องมีสิทธิ์ `logs:CreateLogGroup`)
+
+## Error ที่เคยเจอ (และสาเหตุ)
+
+| error | สาเหตุ | แก้ |
+|---|---|---|
+| `RepositoryNotFoundException ... DescribeRepositories` | ใส่ full image URI ใน `ECR_REPOSITORY` | ใช้ชื่อ repo เท่านั้น (`agency/agency-api`) |
+| `Service cannot be empty` | `ECS_CLUSTER`/`ECS_SERVICE` ว่าง | ตั้ง variable ให้ครบ |
+| `Get "https://<region>.amazonaws.com/v2/": no such host` | registry host ผิดรูปแบบ | workflow แก้แล้ว (derive จาก account) — ต้องอัปเดต workflow เป็นเวอร์ชันล่าสุด |
+| `role ... is invalid` ตอน register | `ECS_EXECUTION_ROLE_ARN` เป็น ARN ของ ECS service | ใช้ `arn:aws:iam::<acct>:role/<name>` |
+| `Subnet ID must match subnet-[0-9a-f]+` | ใช้ placeholder ใน `create-service` | ใส่ subnet ID จริง (2 AZ) |
 
 ## Rollback
 
