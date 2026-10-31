@@ -81,7 +81,7 @@ workflow จะแทนค่า: `family`, `executionRoleArn`, `image`, `runti
 
 - ECR repository
 - ECS cluster + service (Fargate, `awsvpc`, 2 subnets, SG เปิด 8080 จาก ALB SG)
-- ALB target group ชี้ `/api/v1/health` หรือ `/api/v1/dashboard` (matcher 200)
+- ALB target group ชี้ `/api/v1/health` (matcher 200) — endpoint เบา ไม่ generate ข้อมูล
 - CloudWatch log group `/ecs/agency-api` (หรือให้ `awslogs-create-group=true` สร้างให้ — ต้องมีสิทธิ์ `logs:CreateLogGroup`)
 
 ## Error ที่เคยเจอ (และสาเหตุ)

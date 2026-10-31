@@ -1,9 +1,14 @@
 spring:
   application:
     name: agency-api
+  lifecycle:
+    # Rolling deploys send SIGTERM: let in-flight requests finish instead of dropping them.
+    timeout-per-shutdown-phase: 20s
 
 server:
   port: 8080
+  # Graceful shutdown also lets DashboardStream close its SSE emitters before Tomcat stops.
+  shutdown: graceful
 
 # ---- API docs --------------------------------------------------------------
 # Swagger UI:      http://localhost:8080/swagger-ui.html

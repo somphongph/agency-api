@@ -41,6 +41,10 @@ env:
   ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY || 'agency-api' }}
   DOCKER_PLATFORM: ${{ vars.DOCKER_PLATFORM || 'linux/arm64' }}
   IMAGE_TAG: ${{ github.sha }}
+  # ECS occasionally answers 5xx (ServerException) in newer regions; the CLI retries
+  # transient errors, and this raises the ceiling from 3 to 10 attempts.
+  AWS_RETRY_MODE: standard
+  AWS_MAX_ATTEMPTS: '10'
 
 jobs:
   test:
@@ -166,12 +170,21 @@ jobs:
         id: build
         run: |
           set -euo pipefail
-          docker buildx build \
-            --platform "$DOCKER_PLATFORM" \
-            --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --tag "$IMAGE" \
-            --push .
+
+          # Re-running a failed deploy must not fail on an immutable tag that is already
+          # in ECR (same commit SHA), so reuse the existing image when it is there.
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE already exists — reusing it."
+          else
+            docker buildx build \
+              --platform "$DOCKER_PLATFORM" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "$IMAGE" \
+              --push .
+          fi
+
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
 
       - name: Render task definition
@@ -217,9 +230,22 @@ jobs:
         id: register
         run: |
           set -euo pipefail
-          arn=$(aws ecs register-task-definition \
-                  --cli-input-json file:///tmp/task-definition.json \
-                  --query 'taskDefinition.taskDefinitionArn' --output text)
+          arn=""
+          for attempt in 1 2 3 4; do
+            if arn=$(aws ecs register-task-definition \
+                        --cli-input-json file:///tmp/task-definition.json \
+                        --query 'taskDefinition.taskDefinitionArn' --output text \
+                        2>/tmp/register.err); then
+              break
+            fi
+            echo "::warning::register-task-definition failed (attempt ${attempt}/4)"
+            cat /tmp/register.err
+            if [ "$attempt" = "4" ]; then
+              echo "::error::register-task-definition kept failing — see the AWS error above."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
           echo "task_definition=$arn" >> "$GITHUB_OUTPUT"
           echo "Registered $arn"
 
