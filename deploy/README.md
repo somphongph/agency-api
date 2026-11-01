@@ -94,6 +94,11 @@ workflow จะแทนค่า: `family`, `executionRoleArn`, `image`, `runti
 | `role ... is invalid` ตอน register | `ECS_EXECUTION_ROLE_ARN` เป็น ARN ของ ECS service | ใช้ `arn:aws:iam::<acct>:role/<name>` |
 | `Subnet ID must match subnet-[0-9a-f]+` | ใช้ placeholder ใน `create-service` | ใส่ subnet ID จริง (2 AZ) |
 
+## Metrics
+
+`/actuator/prometheus` (actuator + micrometer) เปิดให้ Prometheus scrape — **ห้ามให้ ALB/public เข้าถึง**:
+ให้ ALB route เฉพาะ `/api/*` และ scrape จากใน VPC (หรือใช้ ADOT/CloudWatch agent)
+
 ## Rollback
 
 ```bash

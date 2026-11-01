@@ -5,7 +5,7 @@
 #
 # Build context: this directory (agency-api/)
 #   docker build -t agency-api .
-#   docker compose -f ../agency-docs/docker/docker-compose.yml up -d --build
+#   cd ../agency-docs/docker && make up
 # ---------------------------------------------------------------------------
 
 # ---- Build stage ----------------------------------------------------------

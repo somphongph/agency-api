@@ -6,9 +6,13 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.agency.dashboard.api.model.ApiResponse;
 import com.agency.dashboard.api.model.DashboardResponse;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import jakarta.annotation.PreDestroy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -33,6 +37,9 @@ public class DashboardStream {
     static final long HEARTBEAT_MS = 20_000;
 
     private final List<SseEmitter> emitters = new CopyOnWriteArrayList<>();
+    private final AtomicInteger subscribers = new AtomicInteger();
+    private final Counter publishedEvents;
+    private final Counter publishFailures;
     private final ScheduledExecutorService heartbeatExecutor = Executors.newSingleThreadScheduledExecutor(runnable -> {
         Thread thread = new Thread(runnable, "dashboard-heartbeat");
         thread.setDaemon(true);
@@ -40,8 +47,19 @@ public class DashboardStream {
     });
     private final DashboardService dashboardService;
 
-    public DashboardStream(DashboardService dashboardService) {
+    public DashboardStream(DashboardService dashboardService, MeterRegistry meterRegistry) {
         this.dashboardService = dashboardService;
+
+        Gauge.builder("dashboard.stream.subscribers", subscribers, AtomicInteger::get)
+                .description("Open SSE connections")
+                .register(meterRegistry);
+        this.publishedEvents = Counter.builder("dashboard.stream.events")
+                .description("Dashboard events sent to subscribers")
+                .register(meterRegistry);
+        this.publishFailures = Counter.builder("dashboard.stream.publish.failures")
+                .description("Dashboard events that could not be delivered")
+                .register(meterRegistry);
+
         heartbeatExecutor.scheduleAtFixedRate(this::heartbeat, HEARTBEAT_MS, HEARTBEAT_MS, TimeUnit.MILLISECONDS);
     }
 
@@ -50,12 +68,13 @@ public class DashboardStream {
         // 0 = never time out; the stream lives until the client or the server closes it.
         SseEmitter emitter = new SseEmitter(0L);
         emitters.add(emitter);
-        emitter.onCompletion(() -> emitters.remove(emitter));
+        subscribers.incrementAndGet();
+        emitter.onCompletion(() -> unregister(emitter));
         emitter.onTimeout(() -> {
-            emitters.remove(emitter);
+            unregister(emitter);
             emitter.complete();
         });
-        emitter.onError(error -> emitters.remove(emitter));
+        emitter.onError(error -> unregister(emitter));
 
         send(emitter, dashboardService.currentDashboard());
         return emitter;
@@ -72,7 +91,7 @@ public class DashboardStream {
                 emitter.send(SseEmitter.event().comment("ping"));
             } catch (IOException | IllegalStateException ex) {
                 // Client vanished between heartbeats; drop it quietly.
-                emitters.remove(emitter);
+                unregister(emitter);
             }
         });
     }
@@ -83,9 +102,11 @@ public class DashboardStream {
             emitter.send(SseEmitter.event()
                     .name("dashboard")
                     .data(ApiResponse.ok(snapshot), MediaType.APPLICATION_JSON));
+            publishedEvents.increment();
         } catch (IOException | IllegalStateException ex) {
             log.debug("Dropping closed dashboard stream", ex);
-            emitters.remove(emitter);
+            publishFailures.increment();
+            unregister(emitter);
             emitter.complete();
         }
     }
@@ -109,5 +130,13 @@ public class DashboardStream {
     private void closeAll() {
         emitters.forEach(SseEmitter::complete);
         emitters.clear();
+        subscribers.set(0);
+    }
+
+    /** Removes a stream exactly once so the subscriber gauge cannot drift. */
+    private void unregister(SseEmitter emitter) {
+        if (emitters.remove(emitter)) {
+            subscribers.decrementAndGet();
+        }
     }
 }

@@ -249,6 +249,17 @@ jobs:
           echo "task_definition=$arn" >> "$GITHUB_OUTPUT"
           echo "Registered $arn"
 
+      - name: Upload task definition on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: task-definition
+          path: |
+            /tmp/task-definition.json
+            /tmp/register.err
+          if-no-files-found: ignore
+          retention-days: 7
+
       - name: Update service
         run: |
           set -euo pipefail
