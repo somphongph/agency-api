@@ -41,6 +41,16 @@
 
 		<!-- Swagger UI + /v3/api-docs, generated from the controllers and models.
 		     3.x is the line built for Spring Boot 4 / Spring Framework 7. -->
+		<!-- Whitebox metrics: /actuator/prometheus (JVM, HTTP, Tomcat, custom SSE) -->
+		<dependency>
+			<groupId>org.springframework.boot</groupId>
+			<artifactId>spring-boot-starter-actuator</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>io.micrometer</groupId>
+			<artifactId>micrometer-registry-prometheus</artifactId>
+		</dependency>
+
 		<dependency>
 			<groupId>org.springdoc</groupId>
 			<artifactId>springdoc-openapi-starter-webmvc-ui</artifactId>

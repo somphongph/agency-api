@@ -5,7 +5,7 @@
 #
 # Build context: this directory (agency-api/)
 #   docker build -t agency-api .
-#   docker compose -f ../agency-docs/docker/docker-compose.yml up -d --build
+#   cd ../agency-docs/docker && make up
 # ---------------------------------------------------------------------------
 
 # ---- Build stage ----------------------------------------------------------
@@ -41,6 +41,6 @@ ENV JAVA_OPTS="-XX:MaxRAMPercentage=75 -XX:+ExitOnOutOfMemoryError"
 # No curl/wget in the JRE image, so probe the real endpoint over bash's /dev/tcp.
 # This also proves the Spring context is up, not just that the port is bound.
 HEALTHCHECK --interval=10s --timeout=5s --start-period=30s --retries=5 \
-    CMD bash -c "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/v1/dashboard HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q '200'"
+    CMD bash -c "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /api/v1/health HTTP/1.0\r\n\r\n' >&3 && head -1 <&3 | grep -q '200'"
 
 ENTRYPOINT ["sh", "-c", "exec java $JAVA_OPTS -jar /app/app.jar"]
