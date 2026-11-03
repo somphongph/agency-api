@@ -16,6 +16,7 @@ import tools.jackson.databind.ObjectMapper;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.hamcrest.Matchers.containsString;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -37,22 +38,28 @@ class DashboardControllerTest {
                 .andExpect(status().isOk())
                 .andExpect(header().string("Cache-Control", containsString("no-store")))
                 .andExpect(content().contentTypeCompatibleWith(MediaType.APPLICATION_JSON))
-                .andExpect(jsonPath("$.updatedAt").isString())
-                .andExpect(jsonPath("$.statusGroups.submit.statusCodes").value("Status 00,01,02"))
-                .andExpect(jsonPath("$.statusGroups.approved.label").value("APPROVED"))
-                .andExpect(jsonPath("$.regions.length()").value(8))
-                .andExpect(jsonPath("$.regions[0].region").value("BKK-A"))
-                .andExpect(jsonPath("$.regions[7].region").value("Other"))
-                .andExpect(jsonPath("$.regions[0].submit.daily.cases").isNumber())
-                .andExpect(jsonPath("$.regions[0].pending.ytd.anp").isNumber())
-                .andExpect(jsonPath("$.overall.region").value("OVERALL"))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.type").value("success"))
+                .andExpect(jsonPath("$.message").value("Successful."))
+                .andExpect(jsonPath("$.data.updatedAt").isString())
+                .andExpect(jsonPath("$.data.statusGroups.submit.statusCodes").value("Status 00,01,02"))
+                .andExpect(jsonPath("$.data.statusGroups.approved.label").value("APPROVED"))
+                .andExpect(jsonPath("$.data.regions.length()").value(8))
+                .andExpect(jsonPath("$.data.regions[0].region").value("BKK-A"))
+                .andExpect(jsonPath("$.data.regions[7].region").value("Other"))
+                .andExpect(jsonPath("$.data.regions[0].submit.daily.cases").isNumber())
+                .andExpect(jsonPath("$.data.regions[0].pending.ytd.anp").isNumber())
+                .andExpect(jsonPath("$.data.overall.region").value("OVERALL"))
                 .andReturn();
 
         JsonNode root = objectMapper.readTree(result.getResponse().getContentAsString());
-        assertThat(root.get("updatedAt").asString()).endsWith("+07:00");
+        JsonNode dashboard = root.get("data");
+        assertThat(root.get("success").asBoolean()).isTrue();
+        assertThat(root.get("type").asString()).isEqualTo("success");
+        assertThat(dashboard.get("updatedAt").asString()).endsWith("+07:00");
 
-        JsonNode regions = root.get("regions");
-        JsonNode overall = root.get("overall");
+        JsonNode regions = dashboard.get("regions");
+        JsonNode overall = dashboard.get("overall");
         for (String group : new String[] {"submit", "approved", "pending"}) {
             for (String period : new String[] {"daily", "mtd", "ytd"}) {
                 int expectedCases = 0;
@@ -69,19 +76,43 @@ class DashboardControllerTest {
     }
 
     @Test
-    void returnsNewNumbersOnEveryRequest() throws Exception {
-        String first = payload();
-        String second = payload();
+    void keepsTheSameSnapshotUntilARefreshIsRequested() throws Exception {
+        String first = dashboardData();
+        String second = dashboardData();
 
-        assertThat(second).isNotEqualTo(first);
+        assertThat(second).isEqualTo(first);
     }
 
-    private String payload() throws Exception {
-        return mockMvc.perform(get("/api/v1/dashboard"))
+    @Test
+    void refreshGeneratesNewRandomNumbers() throws Exception {
+        String before = dashboardData();
+
+        String afterBody = mockMvc.perform(post("/api/v1/dashboard/refresh"))
+                .andExpect(status().isOk())
+                .andExpect(header().string("Cache-Control", containsString("no-store")))
+                .andExpect(jsonPath("$.success").value(true))
+                .andExpect(jsonPath("$.type").value("success"))
+                .andExpect(jsonPath("$.data.regions.length()").value(8))
+                .andReturn()
+                .getResponse()
+                .getContentAsString();
+
+        JsonNode after = objectMapper.readTree(afterBody).get("data");
+        assertThat(after.toString()).isNotEqualTo(before);
+        assertThat(after.get("regions").get(0).get("submit")).isNotNull();
+        assertThat(after.get("overall").get("region").asString()).isEqualTo("OVERALL");
+
+        // The refreshed dataset is now the current one.
+        assertThat(dashboardData()).isEqualTo(after.toString());
+    }
+
+    private String dashboardData() throws Exception {
+        String body = mockMvc.perform(get("/api/v1/dashboard"))
                 .andExpect(status().isOk())
                 .andReturn()
                 .getResponse()
                 .getContentAsString();
+        return objectMapper.readTree(body).get("data").toString();
     }
 
     private static long hundredths(BigDecimal value) {

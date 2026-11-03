@@ -1,7 +1,7 @@
 package com.agency.dashboard.service;
 
 import java.math.BigDecimal;
-import java.util.concurrent.ThreadLocalRandom;
+import java.security.SecureRandom;
 
 import com.agency.dashboard.api.model.Metric;
 import com.agency.dashboard.api.model.PeriodMetrics;
@@ -54,6 +54,8 @@ public class DashboardGenerator {
         return new Metric(cases, BigDecimal.valueOf(cases * rateHundredths, 2));
     }
 
+    private static final SecureRandom RANDOM = new SecureRandom();
+
     private static int share(int total, double maxShare) {
         return (int) Math.floor(total * maxShare);
     }
@@ -66,13 +68,13 @@ public class DashboardGenerator {
         if (maxInclusive <= minInclusive) {
             return minInclusive;
         }
-        return ThreadLocalRandom.current().nextInt(minInclusive, maxInclusive + 1);
+        return RANDOM.nextInt(minInclusive, maxInclusive + 1);
     }
 
     private static long randomLong(long minInclusive, long maxInclusive) {
         if (maxInclusive <= minInclusive) {
             return minInclusive;
         }
-        return ThreadLocalRandom.current().nextLong(minInclusive, maxInclusive + 1);
+        return RANDOM.nextLong(minInclusive, maxInclusive + 1);
     }
 }

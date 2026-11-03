@@ -1,0 +1,290 @@
+name: Deploy API
+
+# Build the image, push it to ECR and roll it out on ECS Fargate.
+#
+# Non-secret settings come from GitHub *Variables*; anything sensitive comes from
+# GitHub *Secrets* (see deploy/README.md). Nothing is baked into the image: the task
+# definition is rendered at deploy time and registered as a new revision.
+
+on:
+  push:
+    branches: 
+      - feature/*
+    paths:
+      - 'src/**'
+      - 'pom.xml'
+      - 'Dockerfile'
+      - 'deploy/**'
+      - '.github/workflows/deploy-api.yml'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'GitHub Environment to deploy to'
+        type: choice
+        options: [staging, production]
+        default: staging
+
+concurrency:
+  group: deploy-api-${{ github.event.inputs.environment || (github.ref_name == 'main' && 'production' || 'staging') }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC: no long-lived AWS keys in the repo
+  contents: read
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECR_REPOSITORY: ${{ vars.ECR_REPOSITORY }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  ECS_SERVICE: ${{ vars.ECS_SERVICE }}
+  ECS_EXECUTION_ROLE_ARN: ${{ vars.ECS_EXECUTION_ROLE_ARN }}
+  ECS_TASK_FAMILY: ${{ vars.ECS_TASK_FAMILY || 'agency-api' }}
+  DOCKER_PLATFORM: ${{ vars.DOCKER_PLATFORM || 'linux/arm64' }}
+  IMAGE_TAG: ${{ github.sha }}
+  # ECS occasionally answers 5xx (ServerException) in newer regions; the CLI retries
+  # transient errors, and this raises the ceiling from 3 to 10 attempts.
+  AWS_RETRY_MODE: standard
+  AWS_MAX_ATTEMPTS: '10'
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+      - name: Unit and integration tests
+        run: ./mvnw -B -ntp test
+
+  deploy:
+    name: Deploy
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment:
+      name: ${{ github.event.inputs.environment || (github.ref_name == 'main' && 'production' || 'staging') }}
+      url: ${{ vars.APP_URL }}
+    env:
+      # Prefer OIDC (AWS_ROLE_ARN). The static-key path only keeps older setups working;
+      # when both are configured, OIDC wins.
+      AWS_AUTH_MODE: ${{ secrets.AWS_ROLE_ARN != '' && 'oidc' || 'keys' }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Configure AWS credentials (OIDC)
+        if: env.AWS_AUTH_MODE == 'oidc'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-session-name: gha-agency-api-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Configure AWS credentials (static keys fallback)
+        if: env.AWS_AUTH_MODE == 'keys'
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate settings
+        run: |
+          set -euo pipefail
+
+          for name in AWS_REGION ECR_REPOSITORY ECS_CLUSTER ECS_SERVICE ECS_EXECUTION_ROLE_ARN; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::$name is empty — set it in the repository/environment variables."
+              exit 1
+            fi
+          done
+
+          # The task needs an IAM role, not an ECS service/ARN from another service.
+          case "$ECS_EXECUTION_ROLE_ARN" in
+            arn:aws:iam::*:role/*) ;;
+            *)
+              echo "::error::ECS_EXECUTION_ROLE_ARN must be an IAM role ARN (arn:aws:iam::<account>:role/<name>), got '$ECS_EXECUTION_ROLE_ARN'."
+              exit 1
+              ;;
+          esac
+
+      - name: Resolve image coordinates
+        run: |
+          set -euo pipefail
+
+          account=$(aws sts get-caller-identity --query Account --output text)
+          registry="${account}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+          # ECR_REPOSITORY must be the repository name only (`agency/agency-api`).
+          # A pasted image URI is accepted and reduced to the name.
+          repository=$(printf '%s' "$ECR_REPOSITORY" \
+            | sed -E 's#^https?://##' \
+            | sed -E 's#^[0-9]{12}\.dkr\.ecr\.[a-z0-9-]+\.amazonaws\.com/##' \
+            | sed -E 's#:[^/:]+$##')
+
+          if [ -z "$repository" ] || printf '%s' "$repository" | grep -q '\.amazonaws\.com'; then
+            echo "::error::ECR_REPOSITORY must be a repository name (e.g. agency/agency-api), got '$ECR_REPOSITORY'."
+            exit 1
+          fi
+
+          {
+            echo "REGISTRY=$registry"
+            echo "ECR_REPOSITORY=$repository"
+            echo "IMAGE=${registry}/${repository}:${IMAGE_TAG}"
+          } >> "$GITHUB_ENV"
+
+          echo "Registry: $registry"
+          echo "Image:    ${registry}/${repository}:${IMAGE_TAG}"
+
+      - name: Check the target exists
+        run: |
+          set -euo pipefail
+
+          if ! aws ecr describe-repositories --repository-names "$ECR_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::ECR repository '$ECR_REPOSITORY' not found in $AWS_REGION."
+            exit 1
+          fi
+
+          status=$(aws ecs describe-services \
+                     --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+                     --query 'services[0].status' --output text)
+          echo "ECS service $ECS_CLUSTER/$ECS_SERVICE: $status"
+          test "$status" = "ACTIVE"
+
+      - name: Log in to ECR
+        run: |
+          set -euo pipefail
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "$REGISTRY"
+
+      - name: Set up QEMU (only needed when DOCKER_PLATFORM differs from the runner)
+        if: env.DOCKER_PLATFORM == 'linux/arm64'
+        uses: docker/setup-qemu-action@v4
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image
+        id: build
+        run: |
+          set -euo pipefail
+
+          # Re-running a failed deploy must not fail on an immutable tag that is already
+          # in ECR (same commit SHA), so reuse the existing image when it is there.
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" \
+               --image-ids imageTag="$IMAGE_TAG" >/dev/null 2>&1; then
+            echo "Image $IMAGE already exists — reusing it."
+          else
+            docker buildx build \
+              --platform "$DOCKER_PLATFORM" \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "$IMAGE" \
+              --push .
+          fi
+
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+
+      - name: Render task definition
+        env:
+          # Optional secrets. JSON array (an object also works):
+          #   [{"name":"FOO","value":"bar"}]
+          APP_ENV_JSON: ${{ secrets.APP_ENV_JSON }}
+          #   [{"name":"DB_PASSWORD","valueFrom":"arn:aws:secretsmanager:..."}]
+          APP_SECRETS_JSON: ${{ secrets.APP_SECRETS_JSON }}
+        run: |
+          set -euo pipefail
+          jq \
+            --arg image "$IMAGE" \
+            --arg family "$ECS_TASK_FAMILY" \
+            --arg execRole "$ECS_EXECUTION_ROLE_ARN" \
+            --arg region "$AWS_REGION" \
+            --arg platform "$DOCKER_PLATFORM" \
+            --argjson extraEnv "${APP_ENV_JSON:-[]}" \
+            --argjson extraSecrets "${APP_SECRETS_JSON:-[]}" \
+            '
+            def entries:
+              if type == "object" then to_entries | map({name: .key, value: .value}) else . end;
+
+            .family = $family
+            | .executionRoleArn = $execRole
+            | .containerDefinitions[0].image = $image
+            | .containerDefinitions[0].environment =
+                (($extraEnv | entries) + .containerDefinitions[0].environment | unique_by(.name))
+            | .containerDefinitions[0].secrets =
+                (($extraSecrets | entries) + .containerDefinitions[0].secrets | unique_by(.name))
+            | .runtimePlatform.cpuArchitecture =
+                (if ($platform | test("arm64")) then "ARM64" else "X86_64" end)
+            | .containerDefinitions[0].logConfiguration.options["awslogs-region"] = $region
+            ' deploy/task-definition.json > /tmp/task-definition.json
+
+          jq -e --arg prefix "$REGISTRY/" \
+            '.containerDefinitions[0].image | startswith($prefix)' /tmp/task-definition.json >/dev/null
+          jq -r '.containerDefinitions[0]
+                 | "image=\(.image)\nenv=\(.environment | length)\nsecrets=\(.secrets | length)"' \
+            /tmp/task-definition.json
+
+      - name: Register task definition
+        id: register
+        run: |
+          set -euo pipefail
+          arn=""
+          for attempt in 1 2 3 4; do
+            if arn=$(aws ecs register-task-definition \
+                        --cli-input-json file:///tmp/task-definition.json \
+                        --query 'taskDefinition.taskDefinitionArn' --output text \
+                        2>/tmp/register.err); then
+              break
+            fi
+            echo "::warning::register-task-definition failed (attempt ${attempt}/4)"
+            cat /tmp/register.err
+            if [ "$attempt" = "4" ]; then
+              echo "::error::register-task-definition kept failing — see the AWS error above."
+              exit 1
+            fi
+            sleep $((attempt * 5))
+          done
+          echo "task_definition=$arn" >> "$GITHUB_OUTPUT"
+          echo "Registered $arn"
+
+      - name: Upload task definition on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: task-definition
+          path: |
+            /tmp/task-definition.json
+            /tmp/register.err
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Update service
+        run: |
+          set -euo pipefail
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "${{ steps.register.outputs.task_definition }}" \
+            --query 'service.{service:serviceName,desired:desiredCount,taskDefinition:taskDefinition}' \
+            --output json
+
+      - name: Wait for the service to stabilize
+        run: |
+          set -euo pipefail
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+          aws ecs describe-services --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE" \
+            --query 'services[0].{status:status,running:runningCount,desired:desiredCount,taskDefinition:taskDefinition}' \
+            --output table
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### agency-api deploy"
+            echo
+            echo "- image: \`${{ steps.build.outputs.image }}\`"
+            echo "- task definition: \`${{ steps.register.outputs.task_definition }}\`"
+            echo "- cluster/service: \`$ECS_CLUSTER\` / \`$ECS_SERVICE\`"
+          } >> "$GITHUB_STEP_SUMMARY"

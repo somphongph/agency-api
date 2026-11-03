@@ -14,6 +14,7 @@ import com.agency.dashboard.api.model.PeriodMetrics;
 import com.agency.dashboard.api.model.RegionRow;
 import com.agency.dashboard.api.model.StatusGroupMeta;
 import com.agency.dashboard.config.DashboardProperties;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 import org.junit.jupiter.api.RepeatedTest;
 import org.junit.jupiter.api.Test;
 
@@ -24,7 +25,7 @@ class DashboardServiceTest {
     private static final List<String> REGIONS = List.of(
             "BKK-A", "BKK-B", "Central", "West", "South", "North", "Northeast", "Other");
 
-    private final DashboardService service = new DashboardService(properties(), new DashboardGenerator(properties()), new OverallAggregator());
+    private final DashboardService service = new DashboardService(properties(), new DashboardGenerator(properties()), new OverallAggregator(), new SimpleMeterRegistry());
 
     @Test
     void returnsEveryRegionInOrderAndTheConfiguredStatusGroups() {
@@ -51,12 +52,21 @@ class DashboardServiceTest {
         assertOverallEqualsSum(response.overall(), response.regions());
     }
 
-    @RepeatedTest(20)
-    void everyCallReturnsFreshRandomData() {
+    @Test
+    void keepsTheSameSnapshotUntilTheDashboardIsRefreshed() {
         DashboardResponse first = service.currentDashboard();
         DashboardResponse second = service.currentDashboard();
 
-        assertThat(snapshot(second)).isNotEqualTo(snapshot(first));
+        assertThat(second).isSameAs(first);
+    }
+
+    @RepeatedTest(20)
+    void refreshGeneratesFreshRandomData() {
+        DashboardResponse first = service.currentDashboard();
+        DashboardResponse refreshed = service.refreshDashboard();
+
+        assertThat(snapshot(refreshed)).isNotEqualTo(snapshot(first));
+        assertThat(service.currentDashboard()).isSameAs(refreshed);
     }
 
     private static void assertStatus(PeriodMetrics metrics) {

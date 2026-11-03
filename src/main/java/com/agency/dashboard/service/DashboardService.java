@@ -6,32 +6,72 @@ import java.time.temporal.ChronoUnit;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 
 import com.agency.dashboard.api.model.DashboardResponse;
 import com.agency.dashboard.api.model.RegionRow;
 import com.agency.dashboard.api.model.StatusGroupMeta;
 import com.agency.dashboard.config.DashboardProperties;
+import io.micrometer.core.instrument.Counter;
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import org.springframework.stereotype.Service;
 
+/**
+ * Owns the single dashboard snapshot the API exposes.
+ *
+ * <p>With push (SSE) there is exactly one "current" dataset: it is generated lazily on the
+ * first read and only regenerated when someone asks for a refresh, so every client (GET,
+ * SSE subscriber, refresh response) sees the same numbers. Previously every GET generated a
+ * new dataset, which would make SSE subscribers and REST readers disagree.</p>
+ */
 @Service
 public class DashboardService {
 
     public static final ZoneId DASHBOARD_ZONE = ZoneId.of("Asia/Bangkok");
 
+    private final AtomicReference<DashboardResponse> snapshot = new AtomicReference<>();
+    private final AtomicLong snapshotEpochSeconds = new AtomicLong();
+    private final Counter refreshCounter;
     private final DashboardProperties properties;
     private final DashboardGenerator generator;
     private final OverallAggregator aggregator;
 
-    public DashboardService(DashboardProperties properties, DashboardGenerator generator, OverallAggregator aggregator) {
+    public DashboardService(
+            DashboardProperties properties,
+            DashboardGenerator generator,
+            OverallAggregator aggregator,
+            MeterRegistry meterRegistry) {
         this.properties = properties;
         this.generator = generator;
         this.aggregator = aggregator;
+
+        this.refreshCounter = Counter.builder("dashboard.refresh")
+                .description("Number of new random datasets generated")
+                .register(meterRegistry);
+        Gauge.builder("dashboard.snapshot.timestamp", snapshotEpochSeconds, AtomicLong::get)
+                .description("Epoch seconds of the current snapshot")
+                .baseUnit("seconds")
+                .register(meterRegistry);
     }
 
+    /** Current dataset, generated on first use. */
     public DashboardResponse currentDashboard() {
+        return snapshot.updateAndGet(existing -> existing != null ? existing : generate());
+    }
+
+    /** Generates a brand new random dataset (same generator as before) and makes it current. */
+    public DashboardResponse refreshDashboard() {
+        refreshCounter.increment();
+        return snapshot.updateAndGet(ignored -> generate());
+    }
+
+    private DashboardResponse generate() {
         List<RegionRow> regions = properties.regions().stream().map(generator::generateRegion).toList();
         Map<String, StatusGroupMeta> statusGroups = new LinkedHashMap<>(properties.statusGroups());
         OffsetDateTime updatedAt = OffsetDateTime.now(DASHBOARD_ZONE).truncatedTo(ChronoUnit.SECONDS);
+        snapshotEpochSeconds.set(updatedAt.toEpochSecond());
         return new DashboardResponse(updatedAt, statusGroups, regions, aggregator.overall(regions));
     }
 }
